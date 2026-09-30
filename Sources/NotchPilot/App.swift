@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
     let outputs = OutputDeviceService()
     let mixer = MixerService()
     let toggles = QuickToggles()
+    let apps = AppsService()
 
     private init() {}
 
@@ -37,5 +38,6 @@ final class AppModel: ObservableObject {
         outputs.start()
         mixer.start()
         toggles.refresh()
+        apps.start()
     }
 }

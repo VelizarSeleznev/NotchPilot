@@ -257,7 +257,7 @@ struct ControlsRow: View {
                                 .contentTransition(.numericText())
                         }
                     }
-                    .help("Macs Fan Control: Full blast / Automatic")
+                    .help("Fans: max / automatic")
                 }
             }
             if showDevices {

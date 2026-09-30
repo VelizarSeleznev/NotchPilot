@@ -1,8 +1,7 @@
 import AppKit
-import ApplicationServices
 
 /// One-button controls borrowed from other menu bar apps:
-/// BrightIntosh (XDR brightness) through its CLI, Macs Fan Control through its menu.
+/// BrightIntosh (XDR brightness) through its CLI, fans through NotchPilot's own SMC helper.
 @MainActor
 final class QuickToggles: ObservableObject {
     @Published private(set) var xdrOn = false
@@ -12,7 +11,6 @@ final class QuickToggles: ObservableObject {
     @Published var message: String?
 
     static let brightIntoshIDs = ["com.velizard.BrightIntosh", "de.brightintosh.app", "de.niklasr22.BrightIntosh"]
-    static let fanControlID = "com.crystalidea.macsfancontrol"
 
     private var brightIntoshURL: URL? {
         Self.brightIntoshIDs.lazy.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }.first
@@ -73,84 +71,43 @@ final class QuickToggles: ObservableObject {
         }
     }
 
-    // MARK: - Fans (Macs Fan Control)
+    // MARK: - Fans (own root helper, see FanHelper/ and script/install_fan_helper.sh)
+
+    static let fanHelperPath = "/Library/PrivilegedHelperTools/com.velizard.notchpilot.fand"
+    static let fanModeFile = "/Users/Shared/NotchPilot/fan-mode"
+    private var wakeObserver: Any?
 
     private func refreshFans() {
-        fansAvailable = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.fanControlID) != nil
-        CFPreferencesAppSynchronize(Self.fanControlID as CFString)
-        let preset = CFPreferencesCopyAppValue("ActivePreset" as CFString, Self.fanControlID as CFString) as? String
-        fansMax = preset == "Predefined:1"
+        fansAvailable = FileManager.default.fileExists(atPath: Self.fanHelperPath)
+        let mode = (try? String(contentsOfFile: Self.fanModeFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        fansMax = mode == "max"
+        if wakeObserver == nil {
+            // The SMC can hand fans back to the system over sleep; re-apply "max" on wake.
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if self?.fansMax == true { self?.writeFanMode("max") }
+                }
+            }
+        }
     }
 
     func toggleFans() {
-        guard fansAvailable else { return }
-        guard AXIsProcessTrusted() else {
-            message = "Allow NotchPilot in Privacy → Accessibility to drive Macs Fan Control"
-            let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(opts)
+        guard fansAvailable else {
+            message = "Fan helper not installed: run script/install_fan_helper.sh from the NotchPilot repo"
             return
         }
-        let target = !fansMax
-        fansMax = target
-        let item = target ? "Full blast" : "Automatic"
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: Self.fanControlID).first else {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.fanControlID) {
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = false
-                NSWorkspace.shared.openApplication(at: url, configuration: config) { [weak self] _, _ in
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.fansMax = !target; self?.toggleFans() }
-                }
-            }
-            return
-        }
-        let pid = app.processIdentifier
-        DispatchQueue.global(qos: .userInitiated).async {
-            let ok = Self.pressStatusMenuItem(pid: pid, title: item)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                if !ok { self?.message = "Couldn't reach Macs Fan Control's menu" }
-                self?.refreshFans()
-            }
-        }
+        fansMax.toggle()
+        writeFanMode(fansMax ? "max" : "auto")
     }
 
-    /// Opens an app's menu bar extra and presses the item with the given title.
-    nonisolated private static func pressStatusMenuItem(pid: pid_t, title: String) -> Bool {
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 2)
-        guard let bar = element(app, "AXExtrasMenuBar"),
-              let barItem = children(bar).first else { return false }
-        AXUIElementPerformAction(barItem, kAXPressAction as CFString)
-        var target: AXUIElement?
-        for _ in 0..<20 {
-            if let menu = children(barItem).first {
-                target = children(menu).first { string($0, kAXTitleAttribute) == title }
-                if target != nil { break }
-            }
-            usleep(50_000)
+    private func writeFanMode(_ mode: String) {
+        do {
+            try (mode + "\n").write(toFile: Self.fanModeFile, atomically: false, encoding: .utf8)
+        } catch {
+            message = "Can't write \(Self.fanModeFile): \(error.localizedDescription)"
         }
-        guard let target else {
-            AXUIElementPerformAction(barItem, kAXCancelAction as CFString)
-            return false
-        }
-        return AXUIElementPerformAction(target, kAXPressAction as CFString) == .success
-    }
-
-    nonisolated private static func element(_ el: AXUIElement, _ attr: String) -> AXUIElement? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, attr as CFString, &value) == .success, let value,
-              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
-    }
-
-    nonisolated private static func children(_ el: AXUIElement) -> [AXUIElement] {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &value) == .success else { return [] }
-        return (value as? [AXUIElement]) ?? []
-    }
-
-    nonisolated private static func string(_ el: AXUIElement, _ attr: String) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, attr as CFString, &value) == .success else { return nil }
-        return value as? String
     }
 }
