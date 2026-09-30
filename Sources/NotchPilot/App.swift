@@ -29,6 +29,7 @@ final class AppModel: ObservableObject {
     let mixer = MixerService()
     let toggles = QuickToggles()
     let apps = AppsService()
+    lazy var remote = RemoteAPI(np: nowPlaying, sessions: sessions, outputs: outputs)
 
     private init() {}
 
@@ -39,5 +40,6 @@ final class AppModel: ObservableObject {
         mixer.start()
         toggles.refresh()
         apps.start()
+        remote.start()
     }
 }

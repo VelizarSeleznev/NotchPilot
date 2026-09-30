@@ -4,6 +4,8 @@ A free, open-source notch island for MacBooks with a notch, in the spirit of Alc
 Hover the notch and it opens with spring motion. Only the shape animates; the window
 never moves, so the motion stays smooth.
 
+![NotchPilot demo](docs/demo.gif)
+
 ## Features
 
 - **Now Playing** from the system media tracker: artwork, play/pause, next/previous,
@@ -91,6 +93,19 @@ macOS asks for each one the first time it's needed:
 
 It relies on private APIs and may break with a macOS update. Debug log:
 `~/Library/Logs/NotchPilot.log`.
+
+## Local API
+
+Other local processes can drive NotchPilot over `DistributedNotificationCenter`
+(payload in the notification `object` as a String). This is how a phone remote can
+be bridged in.
+
+- Commands: `com.velizard.NotchPilot.command` with `play`, `pause`, `toggle`, `next`,
+  `previous`, `seek:<seconds>`, `volume:<0...1>`, `volumeStep:<±delta>`,
+  `mute:toggle|true|false` or `publishNowPlaying`.
+- State: `com.velizard.NotchPilot.nowPlaying` with JSON containing title, artist, album,
+  source, playing, duration, elapsed (at `sampledAt`), artworkKey, artworkPath (JPEG), and
+  the default output's volume, muted and output name. It's posted on every change.
 
 ## Companion apps
 
