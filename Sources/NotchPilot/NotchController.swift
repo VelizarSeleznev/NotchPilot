@@ -123,7 +123,7 @@ final class NotchController {
         withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) { state.toast = (device.symbol, device.name) }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) { self?.state.toast = nil }
+                withAnimation(IslandRootView.shrink) { self?.state.toast = nil }
             }
         }
         hideToast = work
@@ -230,7 +230,7 @@ final class NotchController {
             AppModel.shared.islandOpened()
             withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) { state.expanded = true }
         } else {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.92)) { state.expanded = false }
+            withAnimation(IslandRootView.shrink) { state.expanded = false }
             state.page = .main
         }
     }

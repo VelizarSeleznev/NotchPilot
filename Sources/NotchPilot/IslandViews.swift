@@ -63,6 +63,8 @@ struct IslandRootView: View {
 
     static let expandedWidth: CGFloat = 540
     static let wingsHoldSeconds: TimeInterval = 20
+    /// Critically damped: settles on the notch without overshooting past it.
+    static let shrink = Animation.spring(response: 0.36, dampingFraction: 1)
 
     var body: some View {
         let notch = state.notchSize
@@ -116,8 +118,9 @@ struct IslandRootView: View {
             Spacer(minLength: 0)
         }
         .frame(width: NotchController.windowSize.width, height: NotchController.windowSize.height, alignment: .top)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: showWings)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: toast?.text)
+        // Growing may bounce; shrinking must not, or it undershoots and the physical notch shows.
+        .animation(showWings ? .spring(response: 0.4, dampingFraction: 0.82) : Self.shrink, value: showWings)
+        .animation(toast != nil ? .spring(response: 0.4, dampingFraction: 0.82) : Self.shrink, value: toast?.text)
         .onAppear { wingsHeld = playing }
         .onChange(of: playing) { _, now in
             releaseWings?.cancel()
