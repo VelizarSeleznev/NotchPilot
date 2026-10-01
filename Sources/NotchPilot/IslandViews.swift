@@ -106,6 +106,13 @@ struct IslandRootView: View {
                     .shadow(color: .black.opacity(state.expanded ? 0.45 : 0), radius: 18, y: 10)
             )
             .clipShape(NotchShape(topRadius: top, bottomRadius: bottom))
+            // The physical notch, outside the clip and never animated: whatever the springs
+            // do, the island can't look shorter than the cutout.
+            .background(alignment: .top) {
+                Rectangle().fill(Color.black)
+                    .frame(width: notch.width, height: notch.height)
+                    .allowsHitTesting(false)
+            }
             .background(
                 GeometryReader { geo in
                     Color.clear
