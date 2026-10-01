@@ -8,6 +8,8 @@ import SwiftUI
 struct NotchShape: Shape {
     var topRadius: CGFloat
     var bottomRadius: CGFloat
+    /// Never drawn shorter than this (the physical notch), whatever a spring does to the frame.
+    var minHeight: CGFloat = 0
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
         get { AnimatablePair(topRadius, bottomRadius) }
@@ -15,6 +17,7 @@ struct NotchShape: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
+        let rect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: max(rect.height, minHeight))
         let t = topRadius
         let b = min(bottomRadius, (rect.height) / 2, (rect.width - 2 * t) / 2)
         var p = Path()
@@ -63,14 +66,21 @@ struct IslandRootView: View {
 
     static let expandedWidth: CGFloat = 540
     static let wingsHoldSeconds: TimeInterval = 20
-    /// Critically damped: settles on the notch without overshooting past it.
-    static let shrink = Animation.spring(response: 0.36, dampingFraction: 1)
+    /// Ease-out (cubic) that lands exactly on the notch with zero speed. A bouncy spring
+    /// overshoots below the notch; a critically damped one creeps and SwiftUI cuts its tail,
+    /// so the last pixel snaps.
+    static let shrink = Animation.timingCurve(0.33, 1, 0.68, 1, duration: 0.45)
+    /// Wings sliding out; the bounce is horizontal only.
+    static let grow = Animation.spring(response: 0.4, dampingFraction: 0.82)
 
     var body: some View {
         let notch = state.notchSize
         let playing = np.info?.playing ?? false
         let toast = state.expanded ? nil : state.toast
-        let showWings = !state.expanded && !state.fullscreen && (playing || wingsHeld) && toast == nil
+        // Wings animate explicitly (onChange below). An implicit .animation keyed on them would
+        // also take over the collapse, which shows the wings in the same update, and its bounce
+        // made the island briefly shorter than the notch.
+        let showWings = !state.expanded && !state.fullscreen && wingsHeld && toast == nil
         let wing = toast != nil ? 150 : showWings ? notch.height + 6 : 0
         let top: CGFloat = state.expanded ? 14 : 7
         let bottom: CGFloat = state.expanded ? 32 : 11
@@ -101,18 +111,11 @@ struct IslandRootView: View {
                 }
             }
             .background(
-                NotchShape(topRadius: top, bottomRadius: bottom)
+                NotchShape(topRadius: top, bottomRadius: bottom, minHeight: notch.height)
                     .fill(Color.black)
                     .shadow(color: .black.opacity(state.expanded ? 0.45 : 0), radius: 18, y: 10)
             )
-            .clipShape(NotchShape(topRadius: top, bottomRadius: bottom))
-            // The physical notch, outside the clip and never animated: whatever the springs
-            // do, the island can't look shorter than the cutout.
-            .background(alignment: .top) {
-                Rectangle().fill(Color.black)
-                    .frame(width: notch.width, height: notch.height)
-                    .allowsHitTesting(false)
-            }
+            .clipShape(NotchShape(topRadius: top, bottomRadius: bottom, minHeight: notch.height))
             .background(
                 GeometryReader { geo in
                     Color.clear
@@ -125,16 +128,13 @@ struct IslandRootView: View {
             Spacer(minLength: 0)
         }
         .frame(width: NotchController.windowSize.width, height: NotchController.windowSize.height, alignment: .top)
-        // Growing may bounce; shrinking must not, or it undershoots and the physical notch shows.
-        .animation(showWings ? .spring(response: 0.4, dampingFraction: 0.82) : Self.shrink, value: showWings)
-        .animation(toast != nil ? .spring(response: 0.4, dampingFraction: 0.82) : Self.shrink, value: toast?.text)
         .onAppear { wingsHeld = playing }
         .onChange(of: playing) { _, now in
             releaseWings?.cancel()
             if now {
-                wingsHeld = true
+                withAnimation(Self.grow) { wingsHeld = true }
             } else {
-                let work = DispatchWorkItem { wingsHeld = false }
+                let work = DispatchWorkItem { withAnimation(Self.shrink) { wingsHeld = false } }
                 releaseWings = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.wingsHoldSeconds, execute: work)
             }
