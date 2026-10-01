@@ -21,6 +21,11 @@ never moves, so the motion stays smooth.
   no virtual-device clutter. **⌃⌥⌘O** switches from anywhere and flashes the device
   name in the notch.
 - **Per-app volume mixer** via Core Audio process taps. Apps left at 100% are never tapped.
+- **Lets multipoint headphones go.** Nothing in NotchPilot streams silence to your
+  headphones, and if the only thing playing is an app you muted in the mixer (a game whose
+  audio engine never stops), the Mac parks on its muted speakers after 5 seconds so the
+  headphones can follow your phone. Anything audible brings them back.
+  Off: `defaults write com.velizard.NotchPilot release.enabled -bool false`.
 - **Hidden in fullscreen**: no playback animation over videos or games unless you
   deliberately hover the notch.
 - Optional quick toggles:

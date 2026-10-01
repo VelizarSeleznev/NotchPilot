@@ -26,7 +26,10 @@ final class MixerService: ObservableObject {
     private var taps: [String: AppTap] = [:]
     private var lastHeard: [String: Date] = [:]
     private var pollTimer: Timer?
+    private var watchedProcesses: Set<AudioObjectID> = []
     private let ownPID = getpid()
+    /// Lets Bluetooth headphones go when nothing audible plays (see BluetoothRelease).
+    let release = BluetoothRelease()
 
     func start() {
         volumes = (UserDefaults.standard.dictionary(forKey: "mixer.volumes") as? [String: Float]) ?? [:]
@@ -52,6 +55,12 @@ final class MixerService: ObservableObject {
             guard pid > 0, pid != ownPID else { continue }
             guard let owner = Self.owner(of: pid) else { continue }
             let running: UInt32 = CA.get(obj, CA.address(kAudioProcessPropertyIsRunningOutput), default: 0)
+            if watchedProcesses.insert(obj).inserted {
+                // Start/stop of playback reaches taps and the Bluetooth release without waiting for the poll.
+                CA.listen(obj, CA.address(kAudioProcessPropertyIsRunningOutput)) { [weak self] in
+                    MainActor.assumeIsolated { self?.refreshProcesses() }
+                }
+            }
             var app = grouped[owner.id] ?? AudioApp(
                 id: owner.id, name: owner.name, bundlePath: owner.path, processObjects: [],
                 isPlaying: false, volume: volumes[owner.id] ?? 1, muted: mutes.contains(owner.id)
@@ -72,7 +81,12 @@ final class MixerService: ObservableObject {
             $0.isPlaying != $1.isPlaying ? $0.isPlaying : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
         if sorted != apps { apps = sorted }
+        watchedProcesses.formIntersection(objects)
         syncTaps(with: grouped)
+        for (id, tap) in taps { tap.setActive(grouped[id]?.isPlaying ?? false) }
+        let playing = grouped.values.filter(\.isPlaying)
+        release.update(anyOutput: !playing.isEmpty,
+                       audibleOutput: playing.contains { effectiveGain($0.id) > 0.001 })
     }
 
     func setVolume(_ app: AudioApp, _ volume: Float) {
@@ -98,15 +112,20 @@ final class MixerService: ObservableObject {
             taps.removeValue(forKey: id)?.invalidate()
             return
         }
-        if let tap = taps[id], Set(tap.processObjects) == Set(processObjects) {
+        // A tap mutes only while it is read. Gain 0 reads it through the built-in speakers
+        // (writing silence) so muted apps don't keep Bluetooth headphones busy.
+        let replay = gain > 0.001
+        if let tap = taps[id], Set(tap.processObjects) == Set(processObjects), tap.replays == replay {
             tap.gain = gain
             return
         }
         taps.removeValue(forKey: id)?.invalidate()
-        guard let outputUID = CA.string(CA.defaultOutput, kAudioDevicePropertyDeviceUID) else { return }
+        let device = replay ? CA.defaultOutput : (BluetoothRelease.builtInSpeakers() ?? CA.defaultOutput)
+        guard let outputUID = CA.string(device, kAudioDevicePropertyDeviceUID) else { return }
         do {
-            let tap = try AppTap(processObjects: processObjects, outputUID: outputUID, name: id)
+            let tap = try AppTap(processObjects: processObjects, outputUID: outputUID, replays: replay, name: id)
             tap.gain = gain
+            tap.setActive(apps.first { $0.id == id }?.isPlaying ?? false)
             taps[id] = tap
             lastError = nil
         } catch {
@@ -187,8 +206,13 @@ enum TapError: Error, CustomStringConvertible {
 }
 
 /// One process tap + private aggregate device that replays the app's audio with gain.
+/// The tap mutes the app only while it is read, so the IOProc runs while the app plays
+/// and stops otherwise: a running IOProc streams silence and keeps Bluetooth headphones
+/// attached to the Mac.
 final class AppTap: @unchecked Sendable {
     let processObjects: [AudioObjectID]
+    let replays: Bool
+    private var active = false
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
@@ -199,8 +223,10 @@ final class AppTap: @unchecked Sendable {
         set { gainPtr.pointee = max(0, min(newValue, 2)) }
     }
 
-    init(processObjects: [AudioObjectID], outputUID: String, name: String) throws {
+    /// `replays` false: mute only (gain 0), `outputUID` is just the clock that reads the tap.
+    init(processObjects: [AudioObjectID], outputUID: String, replays: Bool, name: String) throws {
         self.processObjects = processObjects
+        self.replays = replays
         gainPtr.pointee = 1
 
         let desc = CATapDescription(stereoMixdownOfProcesses: processObjects)
@@ -238,11 +264,12 @@ final class AppTap: @unchecked Sendable {
             invalidate()
             throw TapError.ioProc(status)
         }
-        status = AudioDeviceStart(aggregateID, procID)
-        guard status == noErr else {
-            invalidate()
-            throw TapError.start(status)
-        }
+    }
+
+    func setActive(_ on: Bool) {
+        guard on != active, aggregateID != kAudioObjectUnknown, let procID else { return }
+        let status = on ? AudioDeviceStart(aggregateID, procID) : AudioDeviceStop(aggregateID, procID)
+        if status == noErr { active = on } else { Log.write("mixer: replay \(on ? "start" : "stop") failed \(status)") }
     }
 
     /// Copies the tap (last input stream, stereo float) to every output channel, scaled.
@@ -272,13 +299,14 @@ final class AppTap: @unchecked Sendable {
     func invalidate() {
         if aggregateID != kAudioObjectUnknown {
             if let procID {
-                AudioDeviceStop(aggregateID, procID)
+                if active { AudioDeviceStop(aggregateID, procID) }
                 AudioDeviceDestroyIOProcID(aggregateID, procID)
             }
             AudioHardwareDestroyAggregateDevice(aggregateID)
             aggregateID = AudioObjectID(kAudioObjectUnknown)
         }
         procID = nil
+        active = false
         if tapID != kAudioObjectUnknown {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
